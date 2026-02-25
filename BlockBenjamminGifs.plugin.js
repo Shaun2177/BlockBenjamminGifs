@@ -1,7 +1,7 @@
 /**
  * @name BlockBenjamminGifs
  * @description Hides GIFs whose URLs contain any word from your blocked list, replacing them with an embed.
- * @version 1.0.0
+ * @version 1.1.0
  * @author Shaun2177
  * @authorLink https://github.com/Shaun2177
  * @source https://github.com/Shaun2177/BlockBenjamminGifs
@@ -25,6 +25,13 @@ const GIF_PATTERNS = [
 const config = {
 	changelog: [],
 	settings: [
+		{
+			type: "switch",
+			id: "blockInPicker",
+			name: "Block GIFs in GIF Picker",
+			note: "If enabled, blocked GIFs will also be hidden in the GIF picker/search tab.",
+			value: true,
+		},
 		{
 			type: "switch",
 			id: "caseSensitive",
@@ -76,7 +83,7 @@ module.exports = class BlockGifs {
 		});
 	}
 
-	// Detection 
+	// Detection
 
 	isGifUrl(url) {
 		if (!url) return false;
@@ -93,71 +100,154 @@ module.exports = class BlockGifs {
 		});
 	}
 
+	isInGifPicker(el) {
+		return !!(
+			el.closest?.('[class*="results__"]') ||
+			el.closest?.('[class*="gifPicker"]') ||
+			el.closest?.('[class*="categoryList"]')
+		);
+	}
+
+	getOwnerNode(el, inPicker) {
+		if (inPicker) {
+			return el.closest?.('[class*="result__"]') ?? el.parentElement;
+		}
+		return (
+			el.closest?.('[class*="imageWrapper"]') ??
+			el.closest?.('[class*="embedWrapper"]') ??
+			el.closest?.('article') ??
+			el.closest?.('[id^="message-accessories"]') ??
+			el.parentElement
+		);
+	}
+
 	// DOM processing
 
 	processContainer(container) {
 		if (!(container instanceof HTMLElement)) return;
-		const candidates = [];
-		if (container.matches?.("img, video, a")) candidates.push(container);
-		container.querySelectorAll("img, video, a[href]").forEach(el => candidates.push(el));
-		candidates.forEach(el => this.processElement(el));
+
+		const seen = new Set();
+		if (container.matches?.("img, video, a[href]")) seen.add(container);
+		container.querySelectorAll("img, video, a[href]").forEach(el => seen.add(el));
+
+		seen.forEach(el => this.processElement(el));
 	}
 
 	processElement(el) {
 		if (el.dataset.btgDone) return;
 
-		const urls = [
-			el.src,
-			el.currentSrc,
-			el.href,
-			el.getAttribute("data-original-src"),
-			el.closest?.("a")?.href,
-		].filter(Boolean);
+		const urls = [...new Set(
+			[
+				el.src,
+				el.currentSrc,
+				el.href,
+				el.getAttribute("data-original-src"),
+				el.closest?.("a")?.href,
+			].filter(Boolean)
+		)];
 
 		if (!urls.some(u => this.isGifUrl(u))) return;
 		if (!urls.some(u => this.isBlocked(u))) return;
 
+		const inPicker = this.isInGifPicker(el);
+
+		if (inPicker && !this.settings.blockInPicker) return;
+
 		el.dataset.btgDone = "1";
-		this.hideAndEmbed(el);
+
+		const owner = this.getOwnerNode(el, inPicker);
+		if (owner?.dataset.btgOwnerDone) {
+			if (inPicker) {
+				el.style.display = "none";
+			} else {
+				const w = el.closest?.('[class*="imageWrapper"], [class*="embedMedia"]') ?? el;
+				w.style.display = "none";
+			}
+			return;
+		}
+		if (owner) owner.dataset.btgOwnerDone = "1";
+
+		this.hideAndEmbed(el, inPicker, owner);
 	}
 
-	hideAndEmbed(el) {
-		const wrapper = el.closest?.('[class*="imageWrapper"], [class*="gifFavorite"], [class*="embedMedia"]') ?? el;
+	hideAndEmbed(el, inPicker, owner) {
+		const wrapper = inPicker
+			? el
+			: (el.closest?.('[class*="imageWrapper"], [class*="embedMedia"]') ?? el);
 
-		// Inject into #message-accessories which is unclipped and correctly aligned
-		const insertTarget = wrapper.closest('[id^="message-accessories"]') ?? wrapper.parentElement;
+		const insertTarget = inPicker
+			? (owner ?? el.parentElement)
+			: (wrapper.closest?.('[id^="message-accessories"]') ?? wrapper.parentElement);
 
 		wrapper.style.display = "none";
 
+		if (inPicker && owner) {
+			owner.dataset.btgClickBlocked = "1";
+			owner.style.pointerEvents = "none";
+		}
+
 		const container = document.createElement("div");
 		container.dataset.btgEmbed = "1";
+		if (inPicker) container.classList.add("btg-compact");
 
-		const embed = document.createElement("div");
-		embed.className = "btg-embed";
-		embed.innerHTML = `
-            <div class="btg-row">
-                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" style="flex-shrink:0">
-                    <path d="M12 2L4 5v6c0 5.25 3.5 10.15 8 11.35C16.5 21.15 20 16.25 20 11V5L12 2z" fill="var(--status-danger)"/>
-                    <path d="M9 12l2 2 4-4" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-                </svg>
-                <div>
-                    <div class="btg-title">Blocked GIF</div>
-                    <div class="btg-desc">This message contains media which may contain an edited Benjammins GIF</div>
-                </div>
-            </div>
-        `;
+		if (inPicker) {
+			container.innerHTML = `
+				<div class="btg-embed">
+					<div class="btg-row">
+						<svg width="22" height="22" viewBox="0 0 24 24" fill="none" style="flex-shrink:0">
+							<path d="M12 2L4 5v6c0 5.25 3.5 10.15 8 11.35C16.5 21.15 20 16.25 20 11V5L12 2z" fill="var(--status-danger)"/>
+							<path d="M9 12l2 2 4-4" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+						</svg>
+						<div>
+							<div class="btg-title">Blocked GIF</div>
+							<div class="btg-desc">May contain a Benjammins GIF</div>
+						</div>
+					</div>
+					<div class="btg-footer">
+						<span class="btg-toggle">👁 Show</span>
+					</div>
+				</div>
+			`;
+		} else {
+			container.innerHTML = `
+				<div class="btg-embed">
+					<div class="btg-row">
+						<svg width="22" height="22" viewBox="0 0 24 24" fill="none" style="flex-shrink:0">
+							<path d="M12 2L4 5v6c0 5.25 3.5 10.15 8 11.35C16.5 21.15 20 16.25 20 11V5L12 2z" fill="var(--status-danger)"/>
+							<path d="M9 12l2 2 4-4" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+						</svg>
+						<div>
+							<div class="btg-title">Blocked GIF</div>
+							<div class="btg-desc">This message contains media which may contain an edited Benjammins GIF</div>
+						</div>
+					</div>
+				</div>
+				<div class="btg-footer">
+					<span class="btg-toggle">👁 Show original GIF</span>
+				</div>
+			`;
+		}
 
-		const footer = document.createElement("div");
-		footer.className = "btg-footer";
-		footer.innerHTML = `<span class="btg-toggle">👁 Show original GIF</span>`;
-
-		footer.querySelector(".btg-toggle").addEventListener("click", () => {
+		container.querySelector(".btg-toggle").addEventListener("click", e => {
+			e.stopPropagation();
 			wrapper.style.display = "";
+			wrapper.querySelectorAll("[data-btg-done]").forEach(child => {
+				child.style.display = "";
+			});
+			if (owner) delete owner.dataset.btgOwnerDone;
 			container.remove();
+			if (inPicker && owner) {
+				owner.style.pointerEvents = "";
+				delete owner.dataset.btgClickBlocked;
+			}
 		});
 
-		container.appendChild(embed);
-		container.appendChild(footer);
+		if (inPicker) {
+			for (const evt of ["mouseover", "mouseenter", "mousemove", "mouseout", "mouseleave"]) {
+				container.addEventListener(evt, e => e.stopPropagation());
+			}
+		}
+
 		insertTarget.appendChild(container);
 	}
 
@@ -171,6 +261,13 @@ module.exports = class BlockGifs {
 			const wrapper = el.closest?.('[class*="imageWrapper"], [class*="gifFavorite"], [class*="embedMedia"]');
 			if (wrapper) wrapper.style.display = "";
 		});
+		document.querySelectorAll("[data-btg-owner-done]").forEach(el => {
+			delete el.dataset.btgOwnerDone;
+		});
+		document.querySelectorAll("[data-btg-click-blocked]").forEach(el => {
+			el.style.pointerEvents = "";
+			delete el.dataset.btgClickBlocked;
+		});
 		this.processContainer(document.body);
 	}
 
@@ -180,6 +277,7 @@ module.exports = class BlockGifs {
 		this.initSettings();
 
 		DOM.addStyle(this.meta.name, `
+            /* ── Standard chat embed ── */
             .btg-embed {
                 display:        flex;
                 flex-direction: column;
@@ -223,6 +321,59 @@ module.exports = class BlockGifs {
                 color:           var(--text-normal);
                 text-decoration: underline;
             }
+
+            /* ── Compact GIF picker embed ── */
+            .btg-compact {
+                position:       absolute;
+                inset:          0;
+                z-index:        1;
+                box-sizing:     border-box;
+                pointer-events: none;
+            }
+            .btg-compact .btg-toggle {
+                pointer-events: auto;
+            }
+            .btg-compact .btg-embed {
+                display:         flex;
+                flex-direction:  column;
+                justify-content: space-between;
+                width:           100%;
+                height:          100%;
+                box-sizing:      border-box;
+                white-space:     normal;
+                margin-top:      0;
+                border-radius:   4px;
+            }
+            .btg-compact .btg-row {
+                flex:        1;
+                display:     flex;
+                align-items: center;
+                padding:     10px 12px;
+                gap:         10px;
+                flex-wrap:   wrap;
+                overflow:    hidden;
+            }
+            .btg-compact .btg-row svg {
+                width:       20px;
+                height:      20px;
+                flex-shrink: 0;
+            }
+            .btg-compact .btg-title {
+                font-size: 13px;
+            }
+            .btg-compact .btg-desc {
+                font-size:   13px;
+                white-space: normal;
+                word-break:  break-word;
+            }
+            .btg-compact .btg-footer {
+                flex-shrink: 0;
+                padding:     8px 12px;
+                border-top:  1px solid var(--background-modifier-accent);
+            }
+            .btg-compact .btg-toggle {
+                font-size: 15px;
+            }
         `);
 
 		this.processContainer(document.body);
@@ -247,6 +398,13 @@ module.exports = class BlockGifs {
 			delete el.dataset.btgDone;
 			const wrapper = el.closest?.('[class*="imageWrapper"], [class*="gifFavorite"], [class*="embedMedia"]');
 			if (wrapper) wrapper.style.display = "";
+		});
+		document.querySelectorAll("[data-btg-owner-done]").forEach(el => {
+			delete el.dataset.btgOwnerDone;
+		});
+		document.querySelectorAll("[data-btg-click-blocked]").forEach(el => {
+			el.style.pointerEvents = "";
+			delete el.dataset.btgClickBlocked;
 		});
 		DOM.removeStyle(this.meta.name);
 	}
